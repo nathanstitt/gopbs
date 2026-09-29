@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
+	"sync"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -94,4 +95,80 @@ func (e *BlobEncoder) encodeEncrypted(plain []byte, compress bool, aead cipher.A
 	out = out[:blobEncHeaderSize+len(payload)]
 	binary.LittleEndian.PutUint32(out[8:], crc32.ChecksumIEEE(out[blobEncHeaderSize:]))
 	return out, nil
+}
+
+// Shared because a decoder is expensive to create; DecodeAll is safe for
+// concurrent use.
+var zstdDecoder = sync.OnceValues(func() (*zstd.Decoder, error) {
+	return zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))
+})
+
+// DecodeBlob decodes a framed blob or chunk. c may be nil for unencrypted
+// frames.
+func DecodeBlob(framed []byte, c *CryptConfig) ([]byte, error) {
+	var cs *cryptState
+	if c != nil {
+		var err error
+		if cs, err = newCryptState(c); err != nil {
+			return nil, err
+		}
+	}
+	return decodeBlob(framed, cs)
+}
+
+// decodeBlob takes the derived key so the reader does not derive it per
+// chunk.
+func decodeBlob(framed []byte, cs *cryptState) ([]byte, error) {
+	if len(framed) < blobHeaderSize {
+		return nil, fmt.Errorf("pbs: blob too short: %d bytes", len(framed))
+	}
+	var magic [8]byte
+	copy(magic[:], framed)
+	crc := binary.LittleEndian.Uint32(framed[8:12])
+
+	var (
+		payload    []byte
+		compressed bool
+	)
+	switch magic {
+	case blobUncompressedMagic, blobCompressedMagic:
+		payload, compressed = framed[blobHeaderSize:], magic == blobCompressedMagic
+		if crc32.ChecksumIEEE(payload) != crc {
+			return nil, fmt.Errorf("pbs: blob crc mismatch")
+		}
+	case blobEncryptedMagic, blobEncryptedComprMagic:
+		if cs == nil {
+			return nil, fmt.Errorf("pbs: blob is encrypted but no key is configured")
+		}
+		if len(framed) < blobEncHeaderSize {
+			return nil, fmt.Errorf("pbs: encrypted blob too short: %d bytes", len(framed))
+		}
+		iv, tag, ct := framed[12:28], framed[28:44], framed[blobEncHeaderSize:]
+		// The CRC covers the ciphertext only.
+		if crc32.ChecksumIEEE(ct) != crc {
+			return nil, fmt.Errorf("pbs: blob crc mismatch")
+		}
+		sealed := make([]byte, 0, len(ct)+len(tag))
+		sealed = append(append(sealed, ct...), tag...)
+		var err error
+		if payload, err = cs.aead.Open(sealed[:0], iv, sealed, nil); err != nil {
+			return nil, fmt.Errorf("pbs: decrypting blob (wrong key?): %w", err)
+		}
+		compressed = magic == blobEncryptedComprMagic
+	default:
+		return nil, fmt.Errorf("pbs: unknown blob magic %x", magic)
+	}
+
+	if !compressed {
+		return payload, nil
+	}
+	dec, err := zstdDecoder()
+	if err != nil {
+		return nil, fmt.Errorf("pbs: zstd decoder: %w", err)
+	}
+	plain, err := dec.DecodeAll(payload, nil)
+	if err != nil {
+		return nil, fmt.Errorf("pbs: decompressing blob: %w", err)
+	}
+	return plain, nil
 }

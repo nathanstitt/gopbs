@@ -31,8 +31,7 @@ func newTLSConfig(cfg Config) (*tls.Config, error) {
 			}
 			got := sha256.Sum256(rawCerts[0])
 			if got != pin {
-				return fmt.Errorf("pbs: certificate fingerprint mismatch: server has %s",
-					formatFingerprint(got))
+				return fmt.Errorf("%w: server has %s", ErrFingerprint, formatFingerprint(got))
 			}
 			return nil
 		},

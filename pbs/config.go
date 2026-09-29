@@ -82,6 +82,8 @@ type Config struct {
 	// (and holds the PBS credentials) on the client's behalf. With
 	// DialSession set, BaseURL, Auth and Datastore are optional and the TLS
 	// settings (Fingerprint, InsecureSkipAll) do not apply to the session.
+	// StartReader does not use it: the dialer cannot tell which protocol to
+	// upgrade to.
 	DialSession func(ctx context.Context, ref SnapshotRef) (net.Conn, error)
 
 	// OnUploadProgress, when set, is called by the upload pipeline as chunks

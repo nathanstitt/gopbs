@@ -21,6 +21,7 @@ type UploadStats struct {
 	Size         uint64 // total bytes indexed
 	ChunkCount   uint64
 	NewChunks    uint64 // uploaded to the server
+	NewBytes     uint64 // plain size of the chunks uploaded to the server
 	ReusedChunks uint64 // deduplicated (previous snapshot or repeats in this stream)
 	// Entries is the index as closed on the server (end offset + digest per
 	// chunk); callers keeping a local copy of a v2 metadata stream for change
@@ -36,6 +37,16 @@ type UploadStats struct {
 // seeded from the previous snapshot's index automatically and shared across
 // all uploads of the session. name may be "root.pxar" or "root.pxar.didx".
 func (s *BackupSession) UploadPXARv1(ctx context.Context, name string, r io.Reader) (UploadStats, error) {
+	if !strings.HasSuffix(name, ".didx") {
+		name += ".didx"
+	}
+	return s.uploadIndexStream(ctx, name, r)
+}
+
+// UploadStream is UploadPXARv1 for any byte stream. The official client
+// restores such an index only to stdout:
+// "proxmox-backup-client restore <snapshot> NAME.didx -".
+func (s *BackupSession) UploadStream(ctx context.Context, name string, r io.Reader) (UploadStats, error) {
 	if !strings.HasSuffix(name, ".didx") {
 		name += ".didx"
 	}
@@ -298,6 +309,7 @@ func (s *BackupSession) uploadIndexStream(ctx context.Context, name string, r io
 				stats.ReusedChunks++
 			} else {
 				stats.NewChunks++
+				stats.NewBytes += cur.size
 			}
 			binary.Write(csum, binary.LittleEndian, cur.offset+cur.size)
 			csum.Write(cur.digest[:])

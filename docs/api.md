@@ -163,7 +163,8 @@ err := sess.Finish(ctx)
 - For custom flows the following primitives are exported:
   `CreateDynamicIndex`, `UploadDynamicChunk`, `AppendDynamicIndex`,
   `CloseDynamicIndex`, `UploadBlob`, `DownloadPrevious`,
-  `ParseDynamicIndex`, `SplitIndexNames`, `BlobEncoder`, `ChunkDigest`.
+  `ParseDynamicIndex`, `SplitIndexNames`, `BlobEncoder`, `DecodeBlob`,
+  `ChunkDigest`.
 
 ### Encryption
 
@@ -190,8 +191,50 @@ cfg := pbs.Config{
   holder, so data survives a lost key file. Requires encrypt mode.
 - Low-level users: `UploadDynamicChunk`'s digest must be
   `sess.ChunkDigest(plain)`, which applies the mode's digest rule.
-- Restore-side decryption is not part of the library (backup-only scope).
+- The reader (below) decrypts and verifies with the same `Config.Crypt`.
 
+
+### Arbitrary streams
+
+`sess.UploadStream(ctx, "data.db", r)` chunks, deduplicates and uploads any
+byte stream (a database file, a tar stream) into `data.db.didx`, exactly
+like `UploadPXARv1` but without implying pxar. The official client writes
+such an index raw only to stdout, and needs the full name:
+`proxmox-backup-client restore <snapshot> data.db.didx - > data.db`.
+`UploadStats.NewBytes` is the plain size of the chunks the session really
+sent; compare it with `Size` to see what deduplication saved.
+
+### Reading snapshots
+
+```go
+snaps, _ := client.ListSnapshots(ctx, "host", "myhost") // newest first
+r, _ := client.StartReader(ctx, snaps[0].Ref)
+defer r.Close()
+
+manifest, _ := r.Manifest(ctx)                  // files, crypt modes, sizes
+meta, _ := r.DownloadBlob(ctx, "app-meta.json") // ".blob" appended
+rc, _ := r.OpenDynamicIndex(ctx, "data.db")     // ".didx" appended
+defer rc.Close()
+io.Copy(out, rc)
+```
+
+- `ListSnapshots` uses the regular API, so the token needs `Datastore.Audit`
+  or `Datastore.Backup`. The configured `Namespace` applies.
+- `StartReader` needs the exact snapshot time; there is no "latest" default.
+- Everything is verified: with `Config.Crypt` set, `Manifest` refuses a
+  snapshot written with another key or with a bad signature; blobs and
+  indexes are checked against the manifest; every chunk's digest is checked.
+  An error at any point is returned from `Read`, never a silent `io.EOF`.
+- `OpenDynamicIndex` fetches up to `Config.Workers` chunks in parallel and
+  delivers them in order; memory is roughly `Workers × ChunkSizeAvg`.
+- The reader returns the raw stream of an index. It has no pxar decoder: a
+  `.pxar.didx` comes back as the pxar byte stream.
+- `DecodeBlob` decodes a framed blob or chunk on its own.
+- Test errors with `errors.Is`: `pbs.ErrAuth` (401/403, the text never
+  carries credentials), `pbs.ErrNotFound` (unknown snapshot or file),
+  `pbs.ErrFingerprint` (the pinned certificate did not match).
+- `Config.DialSession` is not used by `StartReader`: the dialer cannot tell
+  a reader session from a backup session.
 
 ### Sessions through a proxy or tunnel
 

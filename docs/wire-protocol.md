@@ -256,3 +256,43 @@ A v2 backup runs two of these pipelines concurrently over one session (the
 generator couples the streams, so sequential consumption could deadlock);
 the dedup set is shared, so chunks appearing in both streams upload once.
 Then the manifest blob and `/finish`.
+
+## 8. Reading snapshots
+
+### Snapshot listing (regular API)
+
+```
+GET /api2/json/admin/datastore/STORE/snapshots?backup-type=host&backup-id=myhost[&ns=namespace]
+```
+
+A plain HTTPS request with the usual auth headers (no upgrade). The token
+needs `Datastore.Audit` or `Datastore.Backup`. The response is
+`{"data": [{backup-type, backup-id, backup-time, size, protected, files:
+[{filename, size, crypt-mode}]}, ...]}` in no guaranteed order; gopbs sorts
+newest first.
+
+### Reader session
+
+A reader session opens like a backup session, with a different protocol and
+the snapshot time required:
+
+```
+GET //api2/json/reader?backup-type=host&backup-id=myhost&backup-time=1755900000&store=datastore&debug=0[&ns=namespace] HTTP/1.1
+Upgrade: proxmox-backup-reader-protocol-v1
+Connection: Upgrade
+<auth headers>
+```
+
+Endpoints inside the session:
+
+- `GET /download?file-name=NAME` — one file of the snapshot as stored:
+  `index.json.blob`, any `.blob`, or a raw `.didx`. Downloading an index
+  also allows the session to read that index's chunks.
+- `GET /chunk?digest=HEX` — one framed chunk as stored (blob framing, §4).
+  The real server refuses chunks of indexes the session did not download.
+
+gopbs verifies everything it reads: the manifest signature and key
+fingerprint when a key is configured; blob size and SHA-256 against the
+manifest; the index checksum against the manifest before any chunk is
+fetched; each chunk's size and digest (the keyed digest for an encrypted
+index); and the total size at the end of the stream.

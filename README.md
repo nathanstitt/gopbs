@@ -144,9 +144,11 @@ multi-stream and v2 backups, each with a live progress bar.
 * **Streams are implemented, but if the size of the stream changes (increases) after the backup operation has started for that stream, there will be a loss of data. Always make sure the stream doesn't get any more data after backups have begun.**
 
 - [ ] Restore data from PBS
-  - [ ] Restore to disk
-  - [ ] Restore to stream (stdout, writers)
-  - [ ] Synchronous and parallel restore
+  - [x] List snapshots
+  - [x] Read blobs and raw dynamic indexes (verified and decrypted)
+  - [ ] Restore to disk (no pxar decoder)
+  - [x] Restore to stream (`io.Reader`)
+  - [x] Synchronous and parallel restore
 
 - [ ] Backup and restore sources
   - [x] Linux filesystem
@@ -177,7 +179,8 @@ multi-stream and v2 backups, each with a live progress bar.
 - [docs/pxar-format.md](docs/pxar-format.md) — the PXAR v1/v2 formats and the
   `.pcat1` catalog, byte for byte.
 - [docs/wire-protocol.md](docs/wire-protocol.md) — the PBS backup wire
-  protocol: auth, upgrade handshake, endpoints, blob framing, didx, manifest.
+  protocol: auth, upgrade handshake, endpoints, blob framing, didx, manifest,
+  and the reader protocol.
 - [docs/integration-harness.md](docs/integration-harness.md) — the docker
   test stack, what each test proves, the performance comparison.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — design rationale;

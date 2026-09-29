@@ -209,6 +209,7 @@ services:
   # proxmox-backup-client; SNAPSHOT/ARCHIVE/TARGET come from `compose run -e`.
   # KEYFILE (optional, e.g. /keys/pbs-key.json) decrypts an encrypted
   # snapshot; the key files are written by the tests into ./.test-keys.
+  # RAW=1 restores a non-pxar index, which the client writes raw only to stdout.
   # Runs as root: restoring ownership (e.g. the uid/gid-0 virtual root and
   # stream entries) needs it; the chmod afterwards lets the host user clean up.
   pbsrestore:
@@ -225,7 +226,11 @@ services:
       - bash
       - -ec
       - |
-        proxmox-backup-client restore "$$SNAPSHOT" "$$ARCHIVE" "$$TARGET" --repository garagegarage@pbs@pmoxs3:pbs $${KEYFILE:+--keyfile "$$KEYFILE"}
+        if [ -n "$${RAW:-}" ]; then
+          proxmox-backup-client restore "$$SNAPSHOT" "$$ARCHIVE" - --repository garagegarage@pbs@pmoxs3:pbs $${KEYFILE:+--keyfile "$$KEYFILE"} > "$$TARGET"
+        else
+          proxmox-backup-client restore "$$SNAPSHOT" "$$ARCHIVE" "$$TARGET" --repository garagegarage@pbs@pmoxs3:pbs $${KEYFILE:+--keyfile "$$KEYFILE"}
+        fi
         chmod -R a+rwX "$$TARGET"
     volumes:
       - ./.test-restore:/restore:rw

@@ -44,23 +44,24 @@ type BackupSession struct {
 	known *chunkSet // session-wide dedup registry (see upload.go)
 
 	mu       sync.Mutex
-	files    []manifestFile
+	files    []ManifestFile
 	byWID    map[uint64]int // writer id -> index into files
 	finished bool
 }
 
-type manifestFile struct {
-	CryptMode string `json:"crypt-mode"`
-	Csum      string `json:"csum"`
+// ManifestFile is one file entry of a snapshot manifest.
+type ManifestFile struct {
+	CryptMode string `json:"crypt-mode"` // "none", "encrypt" or "sign-only"
+	Csum      string `json:"csum"`       // stored blob's SHA-256, or the index checksum
 	Filename  string `json:"filename"`
-	Size      uint64 `json:"size"`
+	Size      uint64 `json:"size"` // stored blob size, or the plain archive size
 }
 
 type backupManifest struct {
 	BackupID    string         `json:"backup-id"`
 	BackupTime  int64          `json:"backup-time"`
 	BackupType  string         `json:"backup-type"`
-	Files       []manifestFile `json:"files"`
+	Files       []ManifestFile `json:"files"`
 	Signature   any            `json:"signature"`
 	Unprotected map[string]any `json:"unprotected"`
 }
@@ -93,26 +94,18 @@ func (c *Client) StartBackup(ctx context.Context, ref SnapshotRef) (*BackupSessi
 			return nil, fmt.Errorf("pbs: dialing session: %w", err)
 		}
 	} else {
-		header := make(http.Header)
-		if err := c.authHeaders(ctx, header, false); err != nil {
-			return nil, err
-		}
-		header.Set("Upgrade", backupProtocol)
-		header.Set("Connection", "Upgrade")
-
 		// The double slash mirrors proxmox-backup-client's upgrade request
 		// verbatim: the real server normalizes it, and pmoxs3backuproxy matches
 		// on exactly this prefix.
-		conn, err = c.upgrade(ctx, "//api2/json/backup?"+query.Encode(), header)
+		conn, err = c.dialProtocol(ctx, "//api2/json/backup", backupProtocol, query)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	cc, err := (&http2.Transport{}).NewClientConn(conn)
+	cc, err := startHTTP2(conn)
 	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("pbs: starting http/2: %w", err)
+		return nil, err
 	}
 
 	return &BackupSession{
@@ -149,6 +142,26 @@ func (s *BackupSession) ChunkDigest(plain []byte) [32]byte {
 	return sha256.Sum256(plain)
 }
 
+func (c *Client) dialProtocol(ctx context.Context, path, protocol string, query url.Values) (net.Conn, error) {
+	header := make(http.Header)
+	if err := c.authHeaders(ctx, header, false); err != nil {
+		return nil, err
+	}
+	header.Set("Upgrade", protocol)
+	header.Set("Connection", "Upgrade")
+	return c.upgrade(ctx, path+"?"+query.Encode(), header)
+}
+
+// startHTTP2 closes conn on failure.
+func startHTTP2(conn net.Conn) (*http2.ClientConn, error) {
+	cc, err := (&http2.Transport{}).NewClientConn(conn)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("pbs: starting http/2: %w", err)
+	}
+	return cc, nil
+}
+
 // upgrade performs the HTTP/1.1 101 handshake and returns the raw connection
 // (with any bytes the server sent after the 101 preserved).
 func (c *Client) upgrade(ctx context.Context, path string, header http.Header) (net.Conn, error) {
@@ -163,6 +176,9 @@ func (c *Client) upgrade(ctx context.Context, path string, header http.Header) (
 	} else {
 		conn.SetDeadline(time.Now().Add(30 * time.Second))
 	}
+	// Cancellation, not only the deadline, must stop the handshake.
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
 
 	var req bytes.Buffer
 	fmt.Fprintf(&req, "GET %s HTTP/1.1\r\nHost: %s\r\n", path, c.addr)
@@ -186,10 +202,13 @@ func (c *Client) upgrade(ctx context.Context, path string, header http.Header) (
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		conn.Close()
-		return nil, fmt.Errorf("pbs: protocol upgrade refused: %s: %s",
-			resp.Status, strings.TrimSpace(string(body)))
+		return nil, statusError("protocol upgrade refused", resp.Status, resp.StatusCode, body)
 	}
 
+	if !stop() {
+		conn.Close()
+		return nil, fmt.Errorf("pbs: protocol upgrade: %w", ctx.Err())
+	}
 	conn.SetDeadline(time.Time{})
 	return &bufferedConn{Conn: conn, r: br}, nil
 }
@@ -203,29 +222,36 @@ type bufferedConn struct {
 
 func (b *bufferedConn) Read(p []byte) (int, error) { return b.r.Read(p) }
 
-// roundTrip performs one request on the session connection. Session
-// endpoints are root-relative and need no auth headers: authentication is
-// bound to the connection by the upgrade.
-func (s *BackupSession) roundTrip(ctx context.Context, method, path string, query url.Values, body []byte) ([]byte, error) {
-	u := &url.URL{Scheme: "https", Host: s.client.addr, Path: path, RawQuery: query.Encode()}
+// Session endpoints need no auth headers: authentication is bound to the
+// connection by the upgrade.
+func sessionRoundTrip(ctx context.Context, cc *http2.ClientConn, addr, method, path string, query url.Values, body []byte) (int, string, []byte, error) {
+	u := &url.URL{Scheme: "https", Host: addr, Path: path, RawQuery: query.Encode()}
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("pbs: %w", err)
+		return 0, "", nil, fmt.Errorf("pbs: %w", err)
 	}
 	if method != http.MethodGet {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := s.cc.RoundTrip(req)
+	resp, err := cc.RoundTrip(req)
 	if err != nil {
-		return nil, fmt.Errorf("pbs: %s %s: %w", method, path, err)
+		return 0, "", nil, fmt.Errorf("pbs: %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("pbs: %s %s: reading response: %w", method, path, err)
+		return 0, "", nil, fmt.Errorf("pbs: %s %s: reading response: %w", method, path, err)
 	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+	return resp.StatusCode, resp.Status, respBody, nil
+}
+
+func (s *BackupSession) roundTrip(ctx context.Context, method, path string, query url.Values, body []byte) ([]byte, error) {
+	code, status, respBody, err := sessionRoundTrip(ctx, s.cc, s.client.addr, method, path, query, body)
+	if err != nil {
+		return nil, err
+	}
+	if code < 200 || code > 299 {
 		// "No previous backup" is not an error condition. The real server
 		// reports a missing previous snapshot as 400 "no valid previous
 		// backup", and a previous snapshot that lacks the requested archive
@@ -233,10 +259,10 @@ func (s *BackupSession) roundTrip(ctx context.Context, method, path string, quer
 		// `Unable to open dynamic index ... - No such file or directory`;
 		// pmoxs3backuproxy uses a plain 404 for both.
 		// TODO: Open PR?
-		if path == "/previous" && resp.StatusCode == http.StatusNotFound {
+		if path == "/previous" && code == http.StatusNotFound {
 			return nil, ErrNoPrevious
 		}
-		if path == "/previous" && resp.StatusCode == http.StatusBadRequest {
+		if path == "/previous" && code == http.StatusBadRequest {
 			msg := string(respBody)
 			if strings.Contains(msg, "no valid previous backup") ||
 				(strings.Contains(msg, "Unable to open") &&
@@ -244,8 +270,7 @@ func (s *BackupSession) roundTrip(ctx context.Context, method, path string, quer
 				return nil, ErrNoPrevious
 			}
 		}
-		return nil, fmt.Errorf("pbs: %s %s: %s: %s",
-			method, path, resp.Status, strings.TrimSpace(string(respBody)))
+		return nil, statusError(method+" "+path, status, code, respBody)
 	}
 	return respBody, nil
 }
@@ -274,7 +299,7 @@ func (s *BackupSession) CreateDynamicIndex(ctx context.Context, name string) (ui
 
 	s.mu.Lock()
 	s.byWID[parsed.Data] = len(s.files)
-	s.files = append(s.files, manifestFile{Filename: name, CryptMode: s.cryptLabel()})
+	s.files = append(s.files, ManifestFile{Filename: name, CryptMode: s.cryptLabel()})
 	s.mu.Unlock()
 	return parsed.Data, nil
 }
@@ -390,7 +415,7 @@ func (s *BackupSession) putBlob(ctx context.Context, filename string, framed []b
 
 	sum := sha256.Sum256(framed)
 	s.mu.Lock()
-	s.files = append(s.files, manifestFile{
+	s.files = append(s.files, ManifestFile{
 		Filename:  filename,
 		Size:      uint64(len(framed)),
 		Csum:      hex.EncodeToString(sum[:]),

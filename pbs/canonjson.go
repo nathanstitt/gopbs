@@ -17,6 +17,12 @@ func canonicalManifestJSON(m backupManifest) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pbs: encoding manifest: %w", err)
 	}
+	return canonicalManifestBytes(raw)
+}
+
+// The reader canonicalizes the manifest as received, so members this client
+// does not model are still covered by the signature.
+func canonicalManifestBytes(raw []byte) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var tree map[string]any

@@ -61,9 +61,11 @@ func TestFingerprintPinning(t *testing.T) {
 	t.Run("wrong pin rejected", func(t *testing.T) {
 		bad := "00" + m.fingerprint[2:]
 		c := clientFor(t, m, func(cfg *pbs.Config) { cfg.Fingerprint = bad })
-		if _, err := c.StartBackup(context.Background(), pbs.SnapshotRef{ID: "x"}); err == nil ||
-			!strings.Contains(err.Error(), "fingerprint mismatch") {
-			t.Fatalf("err = %v, want fingerprint mismatch", err)
+		if _, err := c.StartBackup(context.Background(), pbs.SnapshotRef{ID: "x"}); !errors.Is(err, pbs.ErrFingerprint) {
+			t.Fatalf("err = %v, want ErrFingerprint", err)
+		}
+		if _, err := c.ListSnapshots(context.Background(), "", "x"); !errors.Is(err, pbs.ErrFingerprint) {
+			t.Fatalf("list: err = %v, want ErrFingerprint", err)
 		}
 	})
 

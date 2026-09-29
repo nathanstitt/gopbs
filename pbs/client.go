@@ -135,7 +135,7 @@ func (c *Client) ensureTicket(ctx context.Context, a PasswordAuth) (ticket, csrf
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("pbs: ticket login: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return "", "", statusError("ticket login", resp.Status, resp.StatusCode, body)
 	}
 
 	var parsed struct {
