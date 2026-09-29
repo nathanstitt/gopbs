@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/osshield/gopbs/internal/pbsmock"
 	"github.com/osshield/gopbs/pbs"
 	"go.uber.org/goleak"
 )
@@ -69,8 +70,8 @@ func TestReaderRoundTrip(t *testing.T) {
 		{"sign-only", &pbs.CryptConfig{Mode: pbs.CryptModeSignOnly, Key: key}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m := newMockPBS(t)
-			m.setCryptKey(key)
+			m := pbsmock.New(t)
+			m.SetCryptKey(key)
 			c := clientFor(t, m, func(c *pbs.Config) {
 				c.Crypt = tc.crypt
 				c.Workers = tc.workers
@@ -118,7 +119,7 @@ func TestReaderRoundTrip(t *testing.T) {
 }
 
 func TestUploadStreamNewBytes(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	c := clientFor(t, m, func(c *pbs.Config) { c.ChunkSizeAvg = 64 << 10 })
 	data := randomBytes(500_000)
 
@@ -134,20 +135,20 @@ func TestUploadStreamNewBytes(t *testing.T) {
 }
 
 func TestReaderTamperedChunk(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	c := clientFor(t, m, func(c *pbs.Config) { c.ChunkSizeAvg = 64 << 10 })
 	ref, stats := backupStream(t, c, pbs.SnapshotRef{ID: "org1"}, randomBytes(400_000), []byte("{}"))
 
 	// Fix the CRC so only the digest check can notice.
-	m.mu.Lock()
-	for d, framed := range m.chunksEncoded {
+	m.Mu.Lock()
+	for d, framed := range m.ChunksEncoded {
 		if d != hexDigest(stats.Entries[1].Digest) {
 			continue
 		}
 		framed[len(framed)-1] ^= 0xff
 		fixCRC(framed)
 	}
-	m.mu.Unlock()
+	m.Mu.Unlock()
 
 	_, err := readIndex(context.Background(), startReader(t, c, ref), "data.db")
 	if err == nil || !strings.Contains(err.Error(), "digest mismatch") {
@@ -157,8 +158,8 @@ func TestReaderTamperedChunk(t *testing.T) {
 
 func TestReaderWrongKey(t *testing.T) {
 	key := testKey(t)
-	m := newMockPBS(t)
-	m.setCryptKey(key)
+	m := pbsmock.New(t)
+	m.SetCryptKey(key)
 	c := clientFor(t, m, func(c *pbs.Config) { c.Crypt = &pbs.CryptConfig{Key: key} })
 	ref, _ := backupStream(t, c, pbs.SnapshotRef{ID: "org1"}, randomBytes(10_000), []byte("{}"))
 
@@ -182,20 +183,20 @@ func TestReaderWrongKey(t *testing.T) {
 
 func TestReaderForgedManifest(t *testing.T) {
 	key := testKey(t)
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	c := clientFor(t, m, func(c *pbs.Config) { c.Crypt = &pbs.CryptConfig{Mode: pbs.CryptModeSignOnly, Key: key} })
 	ref, _ := backupStream(t, c, pbs.SnapshotRef{ID: "org1"}, randomBytes(10_000), []byte("{}"))
 
-	m.mu.Lock()
-	snap := m.snapshots[0]
-	framed := snap.files["index.json.blob"]
+	m.Mu.Lock()
+	snap := m.Snapshots[0]
+	framed := snap.Files["index.json.blob"]
 	manifest := bytes.Replace(framed[12:], []byte(`"size":10000`), []byte(`"size":10001`), 1)
 	if bytes.Equal(manifest, framed[12:]) {
-		m.mu.Unlock()
+		m.Mu.Unlock()
 		t.Fatal("test setup: size not found in manifest")
 	}
-	snap.files["index.json.blob"] = pbs.NewBlobEncoder().Encode(manifest, false)
-	m.mu.Unlock()
+	snap.Files["index.json.blob"] = pbs.NewBlobEncoder().Encode(manifest, false)
+	m.Mu.Unlock()
 
 	_, err := startReader(t, c, ref).Manifest(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "signature mismatch") {
@@ -204,7 +205,7 @@ func TestReaderForgedManifest(t *testing.T) {
 }
 
 func TestReaderNotFound(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	c := clientFor(t, m, nil)
 	ref, _ := backupStream(t, c, pbs.SnapshotRef{ID: "org1"}, randomBytes(10_000), []byte("{}"))
 
@@ -224,14 +225,14 @@ func TestReaderNotFound(t *testing.T) {
 }
 
 func TestReaderRequiresTime(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	if _, err := clientFor(t, m, nil).StartReader(context.Background(), pbs.SnapshotRef{ID: "x"}); err == nil {
 		t.Fatal("reader without a backup time must fail")
 	}
 }
 
 func TestReaderCancel(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	c := clientFor(t, m, func(c *pbs.Config) { c.ChunkSizeAvg = 64 << 10 })
 	ref, _ := backupStream(t, c, pbs.SnapshotRef{ID: "org1"}, randomBytes(2_000_000), []byte("{}"))
 
@@ -268,12 +269,12 @@ func TestReaderCancel(t *testing.T) {
 }
 
 func TestAuthRejected(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	c := clientFor(t, m, nil)
 	ref, _ := backupStream(t, c, pbs.SnapshotRef{ID: "org1"}, randomBytes(1000), []byte("{}"))
-	m.mu.Lock()
-	m.rejectAuth = true
-	m.mu.Unlock()
+	m.Mu.Lock()
+	m.RejectAuth = true
+	m.Mu.Unlock()
 
 	ctx := context.Background()
 	_, errBackup := c.StartBackup(ctx, pbs.SnapshotRef{ID: "org1"})

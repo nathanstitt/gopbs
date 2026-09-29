@@ -16,6 +16,7 @@ gopbs        Backup(): gives a one-call method to backup a directory tree to a P
 │   └── catalog  .pcat1 catalog encoder/decoder
 ├── pbs      the PBS client: sessions, chunked+deduplicated index uploads
 │   └── chunker  buzhash content-defined chunker (as used by PBS)
+├── pbstest  in-memory PBS server for tests of code that uses pbs
 ```
 
 ## Backup(): A full backup in one method call
@@ -235,6 +236,21 @@ io.Copy(out, rc)
   `pbs.ErrFingerprint` (the pinned certificate did not match).
 - `Config.DialSession` is not used by `StartReader`: the dialer cannot tell
   a reader session from a backup session.
+
+### Testing without a server
+
+```go
+srv := pbstest.NewServer(t)   // stopped in t.Cleanup
+cfg := srv.Config()           // set Namespace, Crypt, Workers as needed
+client, _ := pbs.NewClient(cfg)
+// ... back up, list, read ...
+srv.Snapshots()               // committed snapshots
+srv.DropAfterBytes(64 << 10)  // the next backup connection drops
+srv.RejectAuth(true)          // every request answers 401
+```
+
+The server speaks the backup and reader protocols and the snapshot
+listing, honours namespaces, and keeps a snapshot only after `Finish`.
 
 ### Sessions through a proxy or tunnel
 

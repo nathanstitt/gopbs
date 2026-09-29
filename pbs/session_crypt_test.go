@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/osshield/gopbs/chunker"
+	"github.com/osshield/gopbs/internal/pbsmock"
 	"github.com/osshield/gopbs/pbs"
 )
 
@@ -86,8 +87,8 @@ func TestBackupSessionEncrypted(t *testing.T) {
 	key := testKey(t)
 	cryptCfg := &pbs.CryptConfig{Mode: pbs.CryptModeEncrypt, Key: key, MasterPublicKey: pubPEM}
 
-	m := newMockPBS(t)
-	m.setCryptKey(key)
+	m := pbsmock.New(t)
+	m.SetCryptKey(key)
 	s := start(t, clientFor(t, m, func(c *pbs.Config) { c.Crypt = cryptCfg }))
 	ctx := context.Background()
 	enc := pbs.NewBlobEncoder()
@@ -137,33 +138,33 @@ func TestBackupSessionEncrypted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
 
 	// The mock decrypted each chunk with its own key, so a stored match
 	// proves real encrypted framing (its digest check proved the keyed rule).
 	for i, chunk := range chunks {
-		if got := m.chunks[digests[i]]; !bytes.Equal(got, chunk) {
+		if got := m.Chunks[digests[i]]; !bytes.Equal(got, chunk) {
 			t.Errorf("chunk %d: stored %d bytes, want %d", i, len(got), len(chunk))
 		}
 	}
 
 	// The blob went over the wire under an encrypted magic.
-	if encoded := m.blobsEncoded["extra.blob"]; len(encoded) == 0 || (encoded[0] != 123 && encoded[0] != 230) {
+	if encoded := m.BlobsEncoded["extra.blob"]; len(encoded) == 0 || (encoded[0] != 123 && encoded[0] != 230) {
 		t.Errorf("extra.blob not framed encrypted: % x", encoded[:8])
 	}
 	// The manifest is stored plain; the wrapped key blob is a plain frame
 	// holding the RSA ciphertext.
-	if encoded := m.blobsEncoded["index.json.blob"]; len(encoded) == 0 || encoded[0] != 66 {
+	if encoded := m.BlobsEncoded["index.json.blob"]; len(encoded) == 0 || encoded[0] != 66 {
 		t.Errorf("index.json.blob not framed plain: % x", encoded[:8])
 	}
-	if encoded := m.blobsEncoded["rsa-encrypted.key.blob"]; len(encoded) == 0 || encoded[0] != 66 {
+	if encoded := m.BlobsEncoded["rsa-encrypted.key.blob"]; len(encoded) == 0 || encoded[0] != 66 {
 		t.Errorf("rsa-encrypted.key.blob not framed plain: % x", encoded[:8])
 	}
 
 	// The wrapped key decrypts with the master key back to our session key.
 	//lint:ignore SA1019 the wrap format is PKCS#1 v1.5 for proxmox compatibility
-	doc, err := rsa.DecryptPKCS1v15(nil, rsaKey, m.blobs["rsa-encrypted.key.blob"])
+	doc, err := rsa.DecryptPKCS1v15(nil, rsaKey, m.Blobs["rsa-encrypted.key.blob"])
 	if err != nil {
 		t.Fatalf("master-key decrypt: %v", err)
 	}
@@ -185,7 +186,7 @@ func TestBackupSessionEncrypted(t *testing.T) {
 			CryptMode string `json:"crypt-mode"`
 		} `json:"files"`
 	}
-	if err := json.Unmarshal(m.blobs["index.json.blob"], &manifest); err != nil {
+	if err := json.Unmarshal(m.Blobs["index.json.blob"], &manifest); err != nil {
 		t.Fatal(err)
 	}
 	wantModes := map[string]string{
@@ -211,7 +212,7 @@ func TestBackupSessionEncrypted(t *testing.T) {
 			t.Errorf("manifest misses %q", name)
 		}
 	}
-	verifyManifestSignature(t, m.blobs["index.json.blob"], cryptCfg)
+	verifyManifestSignature(t, m.Blobs["index.json.blob"], cryptCfg)
 }
 
 func TestBackupSessionSignOnly(t *testing.T) {
@@ -220,7 +221,7 @@ func TestBackupSessionSignOnly(t *testing.T) {
 
 	// Deliberately no setCryptKey: sign-only data is plain, so the mock must
 	// accept everything without a key.
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	s := start(t, clientFor(t, m, func(c *pbs.Config) { c.Crypt = cryptCfg }))
 	ctx := context.Background()
 	enc := pbs.NewBlobEncoder()
@@ -255,9 +256,9 @@ func TestBackupSessionSignOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.blobs["rsa-encrypted.key.blob"]; ok {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if _, ok := m.Blobs["rsa-encrypted.key.blob"]; ok {
 		t.Error("sign-only session uploaded a wrapped key")
 	}
 	var manifest struct {
@@ -266,7 +267,7 @@ func TestBackupSessionSignOnly(t *testing.T) {
 			CryptMode string `json:"crypt-mode"`
 		} `json:"files"`
 	}
-	if err := json.Unmarshal(m.blobs["index.json.blob"], &manifest); err != nil {
+	if err := json.Unmarshal(m.Blobs["index.json.blob"], &manifest); err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range manifest.Files {
@@ -278,7 +279,7 @@ func TestBackupSessionSignOnly(t *testing.T) {
 			t.Errorf("%s crypt-mode %q, want %q", f.Filename, f.CryptMode, want)
 		}
 	}
-	verifyManifestSignature(t, m.blobs["index.json.blob"], cryptCfg)
+	verifyManifestSignature(t, m.Blobs["index.json.blob"], cryptCfg)
 }
 
 // TestUploadPipelineEncrypted runs the full worker pipeline in encrypt mode:
@@ -287,8 +288,8 @@ func TestUploadPipelineEncrypted(t *testing.T) {
 	key := testKey(t)
 	cryptCfg := &pbs.CryptConfig{Key: key}
 
-	m := newMockPBS(t)
-	m.setCryptKey(key)
+	m := pbsmock.New(t)
+	m.SetCryptKey(key)
 	data := pipelineData(t)
 	const avg = 64 << 10
 	expected, wantCsum := expectedChunksCrypt(t, cryptCfg, data, avg)
@@ -309,26 +310,26 @@ func TestUploadPipelineEncrypted(t *testing.T) {
 		t.Error("repeated region produced no dedup under encryption")
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var idx *mockIndex
-	for _, i := range m.indexes {
-		if i.name == "root.pxar.didx" {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	var idx *pbsmock.Index
+	for _, i := range m.Indexes {
+		if i.Name == "root.pxar.didx" {
 			idx = i
 		}
 	}
-	if idx == nil || !idx.closed {
+	if idx == nil || !idx.Closed {
 		t.Fatalf("index missing or not closed: %+v", idx)
 	}
-	if idx.csum != hex.EncodeToString(wantCsum[:]) {
-		t.Errorf("index csum %s, want %s", idx.csum, hex.EncodeToString(wantCsum[:]))
+	if idx.Csum != hex.EncodeToString(wantCsum[:]) {
+		t.Errorf("index csum %s, want %s", idx.Csum, hex.EncodeToString(wantCsum[:]))
 	}
 	uniq := make(map[string]bool)
 	for _, e := range expected {
 		uniq[e.digest] = true
 	}
-	if len(m.chunks) != len(uniq) {
-		t.Errorf("server stores %d chunks, want %d unique", len(m.chunks), len(uniq))
+	if len(m.Chunks) != len(uniq) {
+		t.Errorf("server stores %d chunks, want %d unique", len(m.Chunks), len(uniq))
 	}
 }
 
@@ -338,8 +339,8 @@ func TestUploadPipelineEncryptedPreviousDedup(t *testing.T) {
 	key := testKey(t)
 	cryptCfg := &pbs.CryptConfig{Key: key}
 
-	m := newMockPBS(t)
-	m.setCryptKey(key)
+	m := pbsmock.New(t)
+	m.SetCryptKey(key)
 	data := pipelineData(t)
 	const avg = 64 << 10
 	expected, _ := expectedChunksCrypt(t, cryptCfg, data, avg)
@@ -354,9 +355,9 @@ func TestUploadPipelineEncryptedPreviousDedup(t *testing.T) {
 		copy(d[:], raw)
 		digests = append(digests, d)
 	}
-	m.mu.Lock()
-	m.previous["root.pxar.didx"] = makeDidx(digests...)
-	m.mu.Unlock()
+	m.Mu.Lock()
+	m.Previous["root.pxar.didx"] = pbsmock.MakeDidx(digests...)
+	m.Mu.Unlock()
 
 	c := clientFor(t, m, func(cfg *pbs.Config) {
 		cfg.Workers = 4
@@ -373,9 +374,9 @@ func TestUploadPipelineEncryptedPreviousDedup(t *testing.T) {
 	if stats.NewChunks != 0 || stats.ReusedChunks != stats.ChunkCount {
 		t.Errorf("stats %+v: everything should deduplicate", stats)
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.chunks) != 0 {
-		t.Errorf("%d chunks uploaded despite full dedup", len(m.chunks))
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if len(m.Chunks) != 0 {
+		t.Errorf("%d chunks uploaded despite full dedup", len(m.Chunks))
 	}
 }

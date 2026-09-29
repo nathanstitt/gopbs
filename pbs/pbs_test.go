@@ -14,15 +14,16 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/osshield/gopbs/internal/pbsmock"
 	"github.com/osshield/gopbs/pbs"
 )
 
-func clientFor(t *testing.T, m *mockPBS, mutate func(*pbs.Config)) *pbs.Client {
+func clientFor(t *testing.T, m *pbsmock.Server, mutate func(*pbs.Config)) *pbs.Client {
 	t.Helper()
 	cfg := pbs.Config{
-		BaseURL:     m.baseURL,
+		BaseURL:     m.BaseURL,
 		Auth:        pbs.TokenAuth{AuthID: "user@pam!token", Secret: "s3cret"},
-		Fingerprint: m.fingerprint,
+		Fingerprint: m.Fingerprint,
 		Datastore:   "store1",
 	}
 	if mutate != nil {
@@ -45,7 +46,7 @@ func start(t *testing.T, c *pbs.Client) *pbs.BackupSession {
 }
 
 func TestFingerprintPinning(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 
 	t.Run("correct pin connects", func(t *testing.T) {
 		s := start(t, clientFor(t, m, nil))
@@ -53,13 +54,13 @@ func TestFingerprintPinning(t *testing.T) {
 	})
 
 	t.Run("colon-and-case formatting accepted", func(t *testing.T) {
-		formatted := strings.ToUpper(m.fingerprint[:2]) + ":" + strings.Join(splitPairs(m.fingerprint[2:]), ":")
+		formatted := strings.ToUpper(m.Fingerprint[:2]) + ":" + strings.Join(splitPairs(m.Fingerprint[2:]), ":")
 		s := start(t, clientFor(t, m, func(c *pbs.Config) { c.Fingerprint = formatted }))
 		s.Abort()
 	})
 
 	t.Run("wrong pin rejected", func(t *testing.T) {
-		bad := "00" + m.fingerprint[2:]
+		bad := "00" + m.Fingerprint[2:]
 		c := clientFor(t, m, func(cfg *pbs.Config) { cfg.Fingerprint = bad })
 		if _, err := c.StartBackup(context.Background(), pbs.SnapshotRef{ID: "x"}); !errors.Is(err, pbs.ErrFingerprint) {
 			t.Fatalf("err = %v, want ErrFingerprint", err)
@@ -83,7 +84,7 @@ func TestFingerprintPinning(t *testing.T) {
 
 	t.Run("malformed pin rejected at NewClient", func(t *testing.T) {
 		_, err := pbs.NewClient(pbs.Config{
-			BaseURL: m.baseURL, Auth: pbs.TokenAuth{}, Datastore: "d", Fingerprint: "nothex",
+			BaseURL: m.BaseURL, Auth: pbs.TokenAuth{}, Datastore: "d", Fingerprint: "nothex",
 		})
 		if err == nil {
 			t.Fatal("malformed fingerprint must be rejected")
@@ -100,15 +101,15 @@ func splitPairs(s string) []string {
 }
 
 func TestTokenAuthHeader(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	start(t, clientFor(t, m, nil)).Abort()
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.upgradeReqs) != 1 {
-		t.Fatalf("%d upgrade requests", len(m.upgradeReqs))
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if len(m.UpgradeReqs) != 1 {
+		t.Fatalf("%d upgrade requests", len(m.UpgradeReqs))
 	}
-	req := m.upgradeReqs[0]
+	req := m.UpgradeReqs[0]
 	if got := req.Header.Get("Authorization"); got != "PBSAPIToken=user@pam!token:s3cret" {
 		t.Errorf("Authorization = %q", got)
 	}
@@ -125,19 +126,19 @@ func TestTokenAuthHeader(t *testing.T) {
 }
 
 func TestNamespaceParameter(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	c := clientFor(t, m, func(cfg *pbs.Config) { cfg.Namespace = "prod/db" })
 	start(t, c).Abort()
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if got := m.upgradeReqs[0].URL.Query().Get("ns"); got != "prod/db" {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if got := m.UpgradeReqs[0].URL.Query().Get("ns"); got != "prod/db" {
 		t.Errorf("ns = %q", got)
 	}
 }
 
 func TestPasswordAuth(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	c := clientFor(t, m, func(cfg *pbs.Config) {
 		cfg.Auth = pbs.PasswordAuth{Username: "user", Realm: "pam", Password: "hunter2"}
 	})
@@ -145,10 +146,10 @@ func TestPasswordAuth(t *testing.T) {
 	start(t, c).Abort()
 	start(t, c).Abort() // ticket must be cached, not re-requested
 
-	m.mu.Lock()
-	loginCount := m.loginCount
-	cookie := m.upgradeReqs[0].Header.Get("Cookie")
-	m.mu.Unlock()
+	m.Mu.Lock()
+	loginCount := m.LoginCount
+	cookie := m.UpgradeReqs[0].Header.Get("Cookie")
+	m.Mu.Unlock()
 	if loginCount != 1 {
 		t.Errorf("login count = %d, want 1 (ticket cached)", loginCount)
 	}
@@ -168,7 +169,7 @@ func TestPasswordAuth(t *testing.T) {
 
 // The phase gate: a complete mocked backup session.
 func TestBackupSessionFlow(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	s := start(t, clientFor(t, m, nil))
 	ctx := context.Background()
 	enc := pbs.NewBlobEncoder()
@@ -220,23 +221,23 @@ func TestBackupSessionFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !m.finished {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if !m.Finished {
 		t.Error("finish not recorded")
 	}
 	for i, chunk := range chunks {
-		if got := m.chunks[digests[i]]; !bytes.Equal(got, chunk) {
+		if got := m.Chunks[digests[i]]; !bytes.Equal(got, chunk) {
 			t.Errorf("chunk %d: stored %d bytes, want %d", i, len(got), len(chunk))
 		}
 	}
-	idx := m.indexes[wid]
-	if idx == nil || !idx.closed || idx.size != offset || idx.chunkCount != 3 ||
-		idx.csum != hex.EncodeToString(csumArr[:]) {
+	idx := m.Indexes[wid]
+	if idx == nil || !idx.Closed || idx.Size != offset || idx.ChunkCount != 3 ||
+		idx.Csum != hex.EncodeToString(csumArr[:]) {
 		t.Errorf("index state: %+v", idx)
 	}
-	if !bytes.Equal(m.blobs["extra.blob"], []byte("blob payload")) {
-		t.Errorf("blob payload: %q", m.blobs["extra.blob"])
+	if !bytes.Equal(m.Blobs["extra.blob"], []byte("blob payload")) {
+		t.Errorf("blob payload: %q", m.Blobs["extra.blob"])
 	}
 
 	var manifest struct {
@@ -249,8 +250,8 @@ func TestBackupSessionFlow(t *testing.T) {
 			CryptMode string `json:"crypt-mode"`
 		} `json:"files"`
 	}
-	if err := json.Unmarshal(m.blobs["index.json.blob"], &manifest); err != nil {
-		t.Fatalf("manifest: %v (%q)", err, m.blobs["index.json.blob"])
+	if err := json.Unmarshal(m.Blobs["index.json.blob"], &manifest); err != nil {
+		t.Fatalf("manifest: %v (%q)", err, m.Blobs["index.json.blob"])
 	}
 	if manifest.BackupID != "testhost" || manifest.BackupType != "host" {
 		t.Errorf("manifest identity: %+v", manifest)
@@ -270,7 +271,7 @@ func TestBackupSessionFlow(t *testing.T) {
 	// Blob manifest entries carry the ENCODED blob's size and csum (as the
 	// reference client records them); the official restore path verifies
 	// both against the stored file and rejects raw-size entries.
-	encoded := m.blobsEncoded["extra.blob"]
+	encoded := m.BlobsEncoded["extra.blob"]
 	encSum := sha256.Sum256(encoded)
 	blobEntry := manifest.Files[blobIdx]
 	if blobEntry.Size != uint64(len(encoded)) || blobEntry.Csum != hex.EncodeToString(encSum[:]) {
@@ -285,10 +286,10 @@ func TestBackupSessionFlow(t *testing.T) {
 }
 
 func TestStatusPropagation(t *testing.T) {
-	m := newMockPBS(t)
-	m.mu.Lock()
-	m.failPath["/dynamic_index"] = 400
-	m.mu.Unlock()
+	m := pbsmock.New(t)
+	m.Mu.Lock()
+	m.FailPath["/dynamic_index"] = 400
+	m.Mu.Unlock()
 
 	s := start(t, clientFor(t, m, nil))
 	defer s.Abort()
@@ -304,10 +305,10 @@ func TestStatusPropagation(t *testing.T) {
 }
 
 func TestUpgradeRefused(t *testing.T) {
-	m := newMockPBS(t)
-	m.mu.Lock()
-	m.failUpgrade = 404
-	m.mu.Unlock()
+	m := pbsmock.New(t)
+	m.Mu.Lock()
+	m.FailUpgrade = 404
+	m.Mu.Unlock()
 
 	_, err := clientFor(t, m, nil).StartBackup(context.Background(), pbs.SnapshotRef{ID: "x"})
 	if err == nil || !strings.Contains(err.Error(), "404") {
@@ -316,14 +317,14 @@ func TestUpgradeRefused(t *testing.T) {
 }
 
 func TestConnectionDropFailsSession(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	s := start(t, clientFor(t, m, nil))
 	defer s.Abort()
 
 	if _, err := s.CreateDynamicIndex(context.Background(), "a.didx"); err != nil {
 		t.Fatal(err)
 	}
-	m.dropSessions()
+	m.DropSessions()
 	time.Sleep(50 * time.Millisecond)
 
 	// No transparent re-dial: the session must fail, not silently open a
@@ -331,19 +332,19 @@ func TestConnectionDropFailsSession(t *testing.T) {
 	if _, err := s.CreateDynamicIndex(context.Background(), "b.didx"); err == nil {
 		t.Fatal("call after connection drop must fail")
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.upgradeReqs) != 1 {
-		t.Fatalf("%d upgrade requests: the client re-dialed", len(m.upgradeReqs))
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if len(m.UpgradeReqs) != 1 {
+		t.Fatalf("%d upgrade requests: the client re-dialed", len(m.UpgradeReqs))
 	}
 }
 
 func TestPreviousIndex(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	d1, d2 := sha256.Sum256([]byte("one")), sha256.Sum256([]byte("two"))
-	m.mu.Lock()
-	m.previous["root.pxar.didx"] = makeDidx(d1, d2)
-	m.mu.Unlock()
+	m.Mu.Lock()
+	m.Previous["root.pxar.didx"] = pbsmock.MakeDidx(d1, d2)
+	m.Mu.Unlock()
 
 	s := start(t, clientFor(t, m, nil))
 	defer s.Abort()
@@ -365,16 +366,16 @@ func TestParseDynamicIndexValidation(t *testing.T) {
 	if _, err := pbs.ParseDynamicIndex([]byte("short")); err == nil {
 		t.Error("short index must fail")
 	}
-	bad := makeDidx(sha256.Sum256([]byte("x")))
+	bad := pbsmock.MakeDidx(sha256.Sum256([]byte("x")))
 	bad[0] = 0xff
 	if _, err := pbs.ParseDynamicIndex(bad); err == nil {
 		t.Error("bad magic must fail")
 	}
-	trailing := append(makeDidx(sha256.Sum256([]byte("x"))), 0x01)
+	trailing := append(pbsmock.MakeDidx(sha256.Sum256([]byte("x"))), 0x01)
 	if _, err := pbs.ParseDynamicIndex(trailing); err == nil {
 		t.Error("trailing bytes must fail")
 	}
-	empty, err := pbs.ParseDynamicIndex(makeDidx())
+	empty, err := pbs.ParseDynamicIndex(pbsmock.MakeDidx())
 	if err != nil || len(empty) != 0 {
 		t.Errorf("empty index: %v, %d entries", err, len(empty))
 	}
@@ -440,10 +441,10 @@ func TestDownloadPreviousMissingVariants(t *testing.T) {
 		{"genuine-error", 400, "parameter verification failed - 'archive-name': property is missing", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m := newMockPBS(t)
-			m.mu.Lock()
-			m.previousMissingStatus, m.previousMissingMsg = tc.status, tc.msg
-			m.mu.Unlock()
+			m := pbsmock.New(t)
+			m.Mu.Lock()
+			m.PreviousMissingStatus, m.PreviousMissingMsg = tc.status, tc.msg
+			m.Mu.Unlock()
 
 			s := start(t, clientFor(t, m, nil))
 			defer s.Abort()

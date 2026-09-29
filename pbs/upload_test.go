@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/osshield/gopbs/chunker"
+	"github.com/osshield/gopbs/internal/pbsmock"
 	"github.com/osshield/gopbs/pbs"
 )
 
@@ -56,12 +57,12 @@ func expectedChunks(t *testing.T, data []byte, avg uint64) ([]expectedChunk, [32
 // completion; the index must nevertheless be appended in exact stream order
 // with the correct checksum, and repeated content must deduplicate.
 func TestUploadPipeline(t *testing.T) {
-	m := newMockPBS(t)
-	m.mu.Lock()
-	m.chunkDelay = func(digest string) time.Duration {
+	m := pbsmock.New(t)
+	m.Mu.Lock()
+	m.ChunkDelay = func(digest string) time.Duration {
 		return time.Duration(digest[0]%32) * time.Millisecond
 	}
-	m.mu.Unlock()
+	m.Mu.Unlock()
 
 	data := pipelineData(t)
 	const avg = 64 << 10
@@ -86,30 +87,30 @@ func TestUploadPipeline(t *testing.T) {
 		t.Error("repeated region produced no intra-stream dedup")
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var idx *mockIndex
-	for _, i := range m.indexes {
-		if i.name == "root.pxar.didx" {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	var idx *pbsmock.Index
+	for _, i := range m.Indexes {
+		if i.Name == "root.pxar.didx" {
 			idx = i
 		}
 	}
-	if idx == nil || !idx.closed {
+	if idx == nil || !idx.Closed {
 		t.Fatalf("index missing or not closed: %+v", idx)
 	}
-	if idx.csum != hex.EncodeToString(wantCsum[:]) {
-		t.Errorf("index csum %s, want %s", idx.csum, hex.EncodeToString(wantCsum[:]))
+	if idx.Csum != hex.EncodeToString(wantCsum[:]) {
+		t.Errorf("index csum %s, want %s", idx.Csum, hex.EncodeToString(wantCsum[:]))
 	}
-	if idx.size != uint64(len(data)) || idx.chunkCount != uint64(len(expected)) {
-		t.Errorf("index size=%d count=%d", idx.size, idx.chunkCount)
+	if idx.Size != uint64(len(data)) || idx.ChunkCount != uint64(len(expected)) {
+		t.Errorf("index size=%d count=%d", idx.Size, idx.ChunkCount)
 	}
-	if len(idx.digests) != len(expected) {
-		t.Fatalf("appended %d chunks, want %d", len(idx.digests), len(expected))
+	if len(idx.Digests) != len(expected) {
+		t.Fatalf("appended %d chunks, want %d", len(idx.Digests), len(expected))
 	}
 	for i, want := range expected {
-		if idx.digests[i] != want.digest || idx.offsets[i] != want.offset {
+		if idx.Digests[i] != want.digest || idx.Offsets[i] != want.offset {
 			t.Fatalf("append order broken at %d: (%s,%d) want (%s,%d)",
-				i, idx.digests[i][:12], idx.offsets[i], want.digest[:12], want.offset)
+				i, idx.Digests[i][:12], idx.Offsets[i], want.digest[:12], want.offset)
 		}
 	}
 	// Deduplicated chunks are uploaded exactly once.
@@ -117,15 +118,15 @@ func TestUploadPipeline(t *testing.T) {
 	for _, e := range expected {
 		uniq[e.digest] = true
 	}
-	if len(m.chunks) != len(uniq) {
-		t.Errorf("server stores %d chunks, want %d unique", len(m.chunks), len(uniq))
+	if len(m.Chunks) != len(uniq) {
+		t.Errorf("server stores %d chunks, want %d unique", len(m.Chunks), len(uniq))
 	}
 }
 
 // A second backup of identical content must upload nothing: every chunk is
 // known from the previous snapshot's index.
 func TestUploadPipelinePreviousDedup(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	data := pipelineData(t)
 	const avg = 64 << 10
 	expected, _ := expectedChunks(t, data, avg)
@@ -140,9 +141,9 @@ func TestUploadPipelinePreviousDedup(t *testing.T) {
 		copy(d[:], raw)
 		digests = append(digests, d)
 	}
-	m.mu.Lock()
-	m.previous["root.pxar.didx"] = makeDidx(digests...)
-	m.mu.Unlock()
+	m.Mu.Lock()
+	m.Previous["root.pxar.didx"] = pbsmock.MakeDidx(digests...)
+	m.Mu.Unlock()
 
 	c := clientFor(t, m, func(cfg *pbs.Config) { cfg.Workers = 4; cfg.ChunkSizeAvg = avg })
 	s := start(t, c)
@@ -155,18 +156,18 @@ func TestUploadPipelinePreviousDedup(t *testing.T) {
 	if stats.NewChunks != 0 || stats.ReusedChunks != stats.ChunkCount {
 		t.Errorf("stats %+v: everything should deduplicate", stats)
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.chunks) != 0 {
-		t.Errorf("%d chunks uploaded despite full dedup", len(m.chunks))
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if len(m.Chunks) != 0 {
+		t.Errorf("%d chunks uploaded despite full dedup", len(m.Chunks))
 	}
 }
 
 func TestUploadPipelineChunkFailure(t *testing.T) {
-	m := newMockPBS(t)
-	m.mu.Lock()
-	m.failPath["/dynamic_chunk"] = 500
-	m.mu.Unlock()
+	m := pbsmock.New(t)
+	m.Mu.Lock()
+	m.FailPath["/dynamic_chunk"] = 500
+	m.Mu.Unlock()
 
 	s := start(t, clientFor(t, m, nil))
 	defer s.Abort()
@@ -180,17 +181,17 @@ func TestUploadPipelineChunkFailure(t *testing.T) {
 }
 
 func TestUploadCatalogIndexName(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	s := start(t, clientFor(t, m, nil))
 	defer s.Abort()
 
 	if _, err := s.UploadCatalog(context.Background(), strings.NewReader("tiny catalog bytes")); err != nil {
 		t.Fatal(err)
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, idx := range m.indexes {
-		if idx.name == "catalog.pcat1.didx" && idx.closed {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	for _, idx := range m.Indexes {
+		if idx.Name == "catalog.pcat1.didx" && idx.Closed {
 			return
 		}
 	}
@@ -200,7 +201,7 @@ func TestUploadCatalogIndexName(t *testing.T) {
 // Progress callbacks arrive in stream order with monotonic sizes and a final
 // done report matching the returned stats.
 func TestUploadProgress(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	data := pipelineData(t)
 	const avg = 64 << 10
 
@@ -269,12 +270,12 @@ func TestSplitIndexNames(t *testing.T) {
 // A split upload drives two dynamic indexes concurrently over one session;
 // chunks shared between the streams deduplicate across them.
 func TestUploadPXARv2(t *testing.T) {
-	m := newMockPBS(t)
-	m.mu.Lock()
-	m.chunkDelay = func(digest string) time.Duration {
+	m := pbsmock.New(t)
+	m.Mu.Lock()
+	m.ChunkDelay = func(digest string) time.Duration {
 		return time.Duration(digest[0]%16) * time.Millisecond
 	}
-	m.mu.Unlock()
+	m.Mu.Unlock()
 
 	// The payload stream repeats a region of the metadata stream, so some
 	// chunks appear in both indexes and must upload once.
@@ -300,11 +301,11 @@ func TestUploadPXARv2(t *testing.T) {
 		t.Errorf("payload stats %+v, want size %d count %d", payloadStats, len(payloadData), len(expPayload))
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	byName := make(map[string]*mockIndex)
-	for _, i := range m.indexes {
-		byName[i.name] = i
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	byName := make(map[string]*pbsmock.Index)
+	for _, i := range m.Indexes {
+		byName[i.Name] = i
 	}
 	for name, want := range map[string]struct {
 		csum [32]byte
@@ -314,14 +315,14 @@ func TestUploadPXARv2(t *testing.T) {
 		"root.ppxar.didx": {wantPayloadCsum, expPayload},
 	} {
 		idx := byName[name]
-		if idx == nil || !idx.closed {
+		if idx == nil || !idx.Closed {
 			t.Fatalf("index %s missing or not closed", name)
 		}
-		if idx.csum != hex.EncodeToString(want.csum[:]) {
-			t.Errorf("%s csum %s, want %s", name, idx.csum, hex.EncodeToString(want.csum[:]))
+		if idx.Csum != hex.EncodeToString(want.csum[:]) {
+			t.Errorf("%s csum %s, want %s", name, idx.Csum, hex.EncodeToString(want.csum[:]))
 		}
 		for i, e := range want.exp {
-			if idx.digests[i] != e.digest || idx.offsets[i] != e.offset {
+			if idx.Digests[i] != e.digest || idx.Offsets[i] != e.offset {
 				t.Fatalf("%s append order broken at %d", name, i)
 			}
 		}
@@ -331,8 +332,8 @@ func TestUploadPXARv2(t *testing.T) {
 	for _, e := range append(append([]expectedChunk(nil), expMeta...), expPayload...) {
 		uniq[e.digest] = true
 	}
-	if len(m.chunks) != len(uniq) {
-		t.Errorf("server stores %d chunks, want %d unique across both streams", len(m.chunks), len(uniq))
+	if len(m.Chunks) != len(uniq) {
+		t.Errorf("server stores %d chunks, want %d unique across both streams", len(m.Chunks), len(uniq))
 	}
 	if metaStats.ReusedChunks+payloadStats.ReusedChunks == 0 {
 		t.Error("overlapping streams produced no cross-index dedup")

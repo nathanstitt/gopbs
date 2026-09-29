@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/osshield/gopbs/internal/pbsmock"
 	"github.com/osshield/gopbs/pbs"
 )
 
@@ -25,9 +26,9 @@ func (c *upgradedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
 // proxyDial plays the role of a proxy: it performs the upgrade against the
 // mock server with its own credentials and hands back the raw connection.
-func proxyDial(m *mockPBS) func(ctx context.Context, ref pbs.SnapshotRef) (net.Conn, error) {
+func proxyDial(m *pbsmock.Server) func(ctx context.Context, ref pbs.SnapshotRef) (net.Conn, error) {
 	return func(ctx context.Context, ref pbs.SnapshotRef) (net.Conn, error) {
-		conn, err := tls.Dial("tcp", strings.TrimPrefix(m.baseURL, "https://"), &tls.Config{InsecureSkipVerify: true})
+		conn, err := tls.Dial("tcp", strings.TrimPrefix(m.BaseURL, "https://"), &tls.Config{InsecureSkipVerify: true})
 		if err != nil {
 			return nil, err
 		}
@@ -50,7 +51,7 @@ func proxyDial(m *mockPBS) func(ctx context.Context, ref pbs.SnapshotRef) (net.C
 }
 
 func TestDialSession(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	ctx := context.Background()
 
 	// No BaseURL, Auth or Datastore: the dialer owns the connection.
@@ -87,22 +88,22 @@ func TestDialSession(t *testing.T) {
 		t.Fatalf("Finish: %v", err)
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !m.finished {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if !m.Finished {
 		t.Error("mock did not see /finish")
 	}
-	if len(m.upgradeReqs) != 1 {
-		t.Fatalf("expected one upgrade request, got %d", len(m.upgradeReqs))
+	if len(m.UpgradeReqs) != 1 {
+		t.Fatalf("expected one upgrade request, got %d", len(m.UpgradeReqs))
 	}
-	req := m.upgradeReqs[0]
+	req := m.UpgradeReqs[0]
 	if req.Header.Get("Authorization") != "PBSAPIToken=proxy@pam!token:s3cret" {
 		t.Errorf("proxy credentials not used: %q", req.Header.Get("Authorization"))
 	}
 	if req.URL.Query().Get("backup-id") != "tunnelhost" || req.URL.Query().Get("store") != "store1" {
 		t.Errorf("unexpected upgrade query %q", req.URL.RawQuery)
 	}
-	if _, ok := m.blobs["index.json.blob"]; !ok {
+	if _, ok := m.Blobs["index.json.blob"]; !ok {
 		t.Error("manifest was not uploaded")
 	}
 }

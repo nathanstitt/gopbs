@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/osshield/gopbs/internal/pbsmock"
 	"github.com/osshield/gopbs/pbs"
 )
 
@@ -21,7 +22,7 @@ func fixCRC(framed []byte) {
 }
 
 func TestListSnapshots(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	root := clientFor(t, m, nil)
 	inNS := clientFor(t, m, func(c *pbs.Config) { c.Namespace = "tenant/a" })
 
@@ -72,17 +73,17 @@ func TestListSnapshots(t *testing.T) {
 	if len(list) != 1 || !list[0].Ref.Time.Equal(base.Add(4*time.Hour)) {
 		t.Fatalf("namespace listing = %+v", list)
 	}
-	m.mu.Lock()
-	for _, req := range m.upgradeReqs {
+	m.Mu.Lock()
+	for _, req := range m.UpgradeReqs {
 		if req.URL.Query().Get("ns") != "" && req.URL.Query().Get("ns") != "tenant/a" {
 			t.Errorf("upgrade with ns %q", req.URL.Query().Get("ns"))
 		}
 	}
-	m.mu.Unlock()
+	m.Mu.Unlock()
 }
 
 func TestInterruptedBackupLeavesNoSnapshot(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbsmock.New(t)
 	c := clientFor(t, m, nil)
 	ctx := context.Background()
 	s := start(t, c)
@@ -90,7 +91,7 @@ func TestInterruptedBackupLeavesNoSnapshot(t *testing.T) {
 	if _, err := s.UploadStream(ctx, "data.db", bytes.NewReader(randomBytes(10_000))); err != nil {
 		t.Fatal(err)
 	}
-	m.dropSessions()
+	m.DropSessions()
 	time.Sleep(50 * time.Millisecond)
 
 	if err := s.Finish(ctx); err == nil {
