@@ -24,6 +24,15 @@ import (
 
 const backupProtocol = "proxmox-backup-protocol-v1"
 
+// A session connection that stops answering would otherwise block a backup
+// or restore forever: after readIdleTimeout without a frame the client
+// pings, and closes the connection when no answer comes in pingTimeout.
+// Variables so tests can shorten them.
+var (
+	readIdleTimeout = 30 * time.Second
+	pingTimeout     = 15 * time.Second
+)
+
 // ErrNoPrevious reports that the server has no previous snapshot index for
 // the requested archive.
 var ErrNoPrevious = errors.New("pbs: no previous index")
@@ -154,7 +163,8 @@ func (c *Client) dialProtocol(ctx context.Context, path, protocol string, query 
 
 // startHTTP2 closes conn on failure.
 func startHTTP2(conn net.Conn) (*http2.ClientConn, error) {
-	cc, err := (&http2.Transport{}).NewClientConn(conn)
+	t := &http2.Transport{ReadIdleTimeout: readIdleTimeout, PingTimeout: pingTimeout}
+	cc, err := t.NewClientConn(conn)
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("pbs: starting http/2: %w", err)

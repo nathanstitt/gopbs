@@ -10,6 +10,13 @@ import (
 
 type BackupManifest = backupManifest
 
+// SetHTTP2Timeouts shortens the dead-connection detection for a test.
+func SetHTTP2Timeouts(t interface{ Cleanup(func()) }, readIdle, ping time.Duration) {
+	oldIdle, oldPing := readIdleTimeout, pingTimeout
+	readIdleTimeout, pingTimeout = readIdle, ping
+	t.Cleanup(func() { readIdleTimeout, pingTimeout = oldIdle, oldPing })
+}
+
 var CanonicalManifestJSON = canonicalManifestJSON
 
 // CryptDigest returns the keyed chunk digest for data under c.

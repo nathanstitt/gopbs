@@ -7,10 +7,12 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/osshield/gopbs/internal/pbsmock"
 	"github.com/osshield/gopbs/pbs"
@@ -114,5 +116,40 @@ func TestNewClientRequiresAuthWithoutDialSession(t *testing.T) {
 	}
 	if _, err := pbs.NewClient(pbs.Config{DialSession: func(context.Context, pbs.SnapshotRef) (net.Conn, error) { return nil, nil }}); err != nil {
 		t.Errorf("DialSession alone should be enough: %v", err)
+	}
+}
+
+// A server that stops answering must fail the session, not block it.
+func TestUnresponsiveServerFailsSession(t *testing.T) {
+	pbs.SetHTTP2Timeouts(t, 100*time.Millisecond, 100*time.Millisecond)
+	c, err := pbs.NewClient(pbs.Config{
+		DialSession: func(ctx context.Context, ref pbs.SnapshotRef) (net.Conn, error) {
+			client, server := net.Pipe()
+			go io.Copy(io.Discard, server)
+			t.Cleanup(func() { server.Close() })
+			return client, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := c.StartBackup(context.Background(), pbs.SnapshotRef{ID: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Abort()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.CreateDynamicIndex(context.Background(), "a.didx")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("request to an unresponsive server succeeded")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("request to an unresponsive server did not fail")
 	}
 }
