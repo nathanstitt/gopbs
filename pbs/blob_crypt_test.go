@@ -22,11 +22,11 @@ func TestEncryptedBlobRoundTrip(t *testing.T) {
 	}
 
 	cases := []struct {
-		name       string
-		plain      []byte
-		compress   bool
-		wantMagic  byte // first magic byte distinguishes the two
-		wantSmall  bool // framed smaller than plain+44
+		name      string
+		plain     []byte
+		compress  bool
+		wantMagic byte // first magic byte distinguishes the two
+		wantSmall bool // framed smaller than plain+44
 	}{
 		{"compressed", compressible, true, 230, true},
 		{"incompressible stays raw", incompressible, true, 123, false},

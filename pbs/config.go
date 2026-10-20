@@ -73,7 +73,7 @@ type Config struct {
 	// given key; nil uploads plaintext with crypt-mode "none". Treated as
 	// read-only after NewClient.
 	Crypt *CryptConfig
-  
+
 	// DialSession, when set, replaces the built-in TLS dial and HTTP/1.1
 	// protocol upgrade: StartBackup calls it once per session and expects a
 	// connection on which the backup protocol has already been negotiated —
