@@ -67,12 +67,12 @@ func NewClient(cfg Config) (*Client, error) {
 			return nil, err
 		}
 	}
-  
+
 	tlsConf, err := newTLSConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
-  
+
 	return &Client{
 		cfg:     cfg,
 		crypt:   crypt,

@@ -46,6 +46,10 @@ func (s *BackupSession) UploadPXARv1(ctx context.Context, name string, r io.Read
 // UploadStream is UploadPXARv1 for any byte stream. The official client
 // restores such an index only to stdout:
 // "proxmox-backup-client restore <snapshot> NAME.didx -".
+//
+// Every upload of a stream returns as soon as it fails, even while a Read of r
+// is still blocked: r is not read again once that Read returns. A caller that
+// feeds r from a pipe closes the pipe to end that Read.
 func (s *BackupSession) UploadStream(ctx context.Context, name string, r io.Reader) (UploadStats, error) {
 	if !strings.HasSuffix(name, ".didx") {
 		name += ".didx"
@@ -179,6 +183,11 @@ func (s *BackupSession) uploadIndexStream(ctx context.Context, name string, r io
 	go func() {
 		defer close(jobs)
 		emit := func(j chunkJob) bool {
+			// Checked first: once the upload has failed nobody takes jobs, and
+			// a select could still find room in the buffer and read r again.
+			if gctx.Err() != nil {
+				return false
+			}
 			select {
 			case jobs <- j:
 				return true
@@ -225,7 +234,20 @@ func (s *BackupSession) uploadIndexStream(ctx context.Context, name string, r io
 		go func() {
 			defer wg.Done()
 			enc := NewBlobEncoder()
-			for j := range jobs {
+			for {
+				// Workers stop when the upload fails, not only when the producer
+				// closes jobs: the producer may be blocked in a Read of r that
+				// nothing here can end.
+				var j chunkJob
+				select {
+				case next, ok := <-jobs:
+					if !ok {
+						return
+					}
+					j = next
+				case <-gctx.Done():
+					return
+				}
 				d := chunkDone{seq: j.seq, offset: j.offset, size: uint64(len(j.data))}
 				if j.known {
 					d.size, d.digest = j.size, j.digest
@@ -327,8 +349,15 @@ func (s *BackupSession) uploadIndexStream(ctx context.Context, name string, r io
 			}
 		}
 	}
-	if err := <-prodErr; err != nil && firstErr == nil {
-		firstErr = err
+	if firstErr == nil && gctx.Err() != nil {
+		firstErr = gctx.Err()
+	}
+	// The producer is waited for only when the upload went on to the end, in
+	// which case it has already closed jobs and sent its result. After a
+	// failure it may be blocked in a Read of r: returning now leaves that Read
+	// to the caller, who ends it by closing r (see UploadStream).
+	if firstErr == nil {
+		firstErr = <-prodErr
 	}
 	if firstErr != nil {
 		return stats, fmt.Errorf("pbs: uploading %s: %w", name, firstErr)

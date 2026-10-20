@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"io"
 	"math/rand"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -337,5 +339,81 @@ func TestUploadPXARv2(t *testing.T) {
 	}
 	if metaStats.ReusedChunks+payloadStats.ReusedChunks == 0 {
 		t.Error("overlapping streams produced no cross-index dedup")
+	}
+}
+
+// blockingReader serves data, then blocks in Read until release is closed,
+// like a pipe whose writer is stuck on a slow source.
+type blockingReader struct {
+	data    *bytes.Reader
+	release chan struct{}
+	blocked chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingReader) Read(p []byte) (int, error) {
+	if r.data.Len() > 0 {
+		return r.data.Read(p)
+	}
+	r.once.Do(func() { close(r.blocked) })
+	<-r.release
+	return 0, io.ErrClosedPipe
+}
+
+// A failed upload returns while the stream's next Read is still blocked: the
+// caller can end that Read only once the upload has returned.
+func TestUploadFailureDoesNotWaitForABlockedRead(t *testing.T) {
+	const avg = 64 << 10
+	full := make([]byte, 2<<20)
+	rand.New(rand.NewSource(5)).Read(full)
+	// Two whole chunks and half of a third: the producer emits the two, then
+	// blocks reading for the rest of the third.
+	var cuts []uint64
+	for c, err := range chunker.Split(bytes.NewReader(full), avg) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		cuts = append(cuts, c.Offset+uint64(len(c.Data)))
+		if len(cuts) == 3 {
+			break
+		}
+	}
+	data := full[:cuts[1]+(cuts[2]-cuts[1])/2]
+
+	r := &blockingReader{data: bytes.NewReader(data), release: make(chan struct{}), blocked: make(chan struct{})}
+	defer close(r.release)
+
+	m := pbsmock.New(t)
+	var failOnce sync.Once
+	// The first chunk is held until the producer is blocked in Read, then the
+	// next chunk upload fails: the failure comes while nothing can end that Read.
+	m.ChunkDelay = func(string) time.Duration {
+		failOnce.Do(func() {
+			<-r.blocked
+			m.Mu.Lock()
+			m.FailPath["/dynamic_chunk"] = 500
+			m.Mu.Unlock()
+		})
+		return 0
+	}
+	s := start(t, clientFor(t, m, func(cfg *pbs.Config) {
+		cfg.Workers = 1
+		cfg.ChunkSizeAvg = avg
+	}))
+	defer s.Abort()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.UploadStream(context.Background(), "storage", r)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "mock failure") {
+			t.Fatalf("err = %v, want the chunk failure", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("UploadStream did not return after its upload failed")
 	}
 }
