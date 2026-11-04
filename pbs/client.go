@@ -79,7 +79,7 @@ func NewClient(cfg Config) (*Client, error) {
 		addr:    addr,
 		tlsConf: tlsConf,
 		restHTTP: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: cfg.requestTimeout(),
 			Transport: &http.Transport{
 				DialContext:       cfg.Dial,
 				TLSClientConfig:   tlsConf,

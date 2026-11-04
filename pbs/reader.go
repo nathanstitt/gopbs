@@ -82,7 +82,7 @@ func (c *Client) StartReader(ctx context.Context, ref SnapshotRef) (*ReaderSessi
 	if err != nil {
 		return nil, err
 	}
-	cc, err := startHTTP2(conn)
+	cc, err := c.startHTTP2(conn)
 	if err != nil {
 		return nil, err
 	}

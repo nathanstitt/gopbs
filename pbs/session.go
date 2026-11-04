@@ -27,11 +27,32 @@ const backupProtocol = "proxmox-backup-protocol-v1"
 // A session connection that stops answering would otherwise block a backup
 // or restore forever: after readIdleTimeout without a frame the client
 // pings, and closes the connection when no answer comes in pingTimeout.
-// Variables so tests can shorten them.
+// These are the defaults, for a zero Config.ResponseTimeout. Variables so
+// tests can shorten them.
 var (
 	readIdleTimeout = 30 * time.Second
 	pingTimeout     = 15 * time.Second
 )
+
+// defaultRequestTimeout bounds the upgrade and a REST request when
+// Config.ResponseTimeout is zero.
+const defaultRequestTimeout = 30 * time.Second
+
+func (cfg Config) requestTimeout() time.Duration {
+	if cfg.ResponseTimeout > 0 {
+		return cfg.ResponseTimeout
+	}
+	return defaultRequestTimeout
+}
+
+// sessionTimeouts is the idle time before a ping and the wait for its answer.
+func (cfg Config) sessionTimeouts() (idle, ping time.Duration) {
+	if cfg.ResponseTimeout > 0 {
+		ping = cfg.ResponseTimeout / 3
+		return cfg.ResponseTimeout - ping, ping
+	}
+	return readIdleTimeout, pingTimeout
+}
 
 // ErrNoPrevious reports that the server has no previous snapshot index for
 // the requested archive.
@@ -112,7 +133,7 @@ func (c *Client) StartBackup(ctx context.Context, ref SnapshotRef) (*BackupSessi
 		}
 	}
 
-	cc, err := startHTTP2(conn)
+	cc, err := c.startHTTP2(conn)
 	if err != nil {
 		return nil, err
 	}
@@ -162,8 +183,9 @@ func (c *Client) dialProtocol(ctx context.Context, path, protocol string, query 
 }
 
 // startHTTP2 closes conn on failure.
-func startHTTP2(conn net.Conn) (*http2.ClientConn, error) {
-	t := &http2.Transport{ReadIdleTimeout: readIdleTimeout, PingTimeout: pingTimeout}
+func (c *Client) startHTTP2(conn net.Conn) (*http2.ClientConn, error) {
+	idle, ping := c.cfg.sessionTimeouts()
+	t := &http2.Transport{ReadIdleTimeout: idle, PingTimeout: ping}
 	cc, err := t.NewClientConn(conn)
 	if err != nil {
 		conn.Close()
@@ -183,7 +205,7 @@ func (c *Client) upgrade(ctx context.Context, path string, header http.Header) (
 	if deadline, ok := ctx.Deadline(); ok {
 		conn.SetDeadline(deadline)
 	} else {
-		conn.SetDeadline(time.Now().Add(30 * time.Second))
+		conn.SetDeadline(time.Now().Add(c.cfg.requestTimeout()))
 	}
 	// Cancellation, not only the deadline, must stop the handshake.
 	stop := context.AfterFunc(ctx, func() { conn.Close() })

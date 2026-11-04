@@ -17,6 +17,10 @@ func SetHTTP2Timeouts(t interface{ Cleanup(func()) }, readIdle, ping time.Durati
 	t.Cleanup(func() { readIdleTimeout, pingTimeout = oldIdle, oldPing })
 }
 
+// SessionTimeouts is c's session dead-connection check: the idle time before
+// a ping, and the wait for its answer.
+func SessionTimeouts(c *Client) (idle, ping time.Duration) { return c.cfg.sessionTimeouts() }
+
 var CanonicalManifestJSON = canonicalManifestJSON
 
 // CryptDigest returns the keyed chunk digest for data under c.
