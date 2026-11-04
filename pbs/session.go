@@ -175,8 +175,7 @@ func startHTTP2(conn net.Conn) (*http2.ClientConn, error) {
 // upgrade performs the HTTP/1.1 101 handshake and returns the raw connection
 // (with any bytes the server sent after the 101 preserved).
 func (c *Client) upgrade(ctx context.Context, path string, header http.Header) (net.Conn, error) {
-	dialer := &tls.Dialer{Config: c.tlsConf}
-	conn, err := dialer.DialContext(ctx, "tcp", c.addr)
+	conn, err := c.dialTLS(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("pbs: %w", err)
 	}
@@ -221,6 +220,35 @@ func (c *Client) upgrade(ctx context.Context, path string, header http.Header) (
 	}
 	conn.SetDeadline(time.Time{})
 	return &bufferedConn{Conn: conn, r: br}, nil
+}
+
+// dialTLS opens a TCP connection through Config.Dial (a plain net.Dialer when
+// unset) and completes the TLS handshake on it, as tls.Dialer would.
+func (c *Client) dialTLS(ctx context.Context) (*tls.Conn, error) {
+	if c.cfg.Dial == nil {
+		d := &tls.Dialer{Config: c.tlsConf}
+		conn, err := d.DialContext(ctx, "tcp", c.addr)
+		if err != nil {
+			return nil, err
+		}
+		return conn.(*tls.Conn), nil
+	}
+	raw, err := c.cfg.Dial(ctx, "tcp", c.addr)
+	if err != nil {
+		return nil, err
+	}
+	cfg := c.tlsConf.Clone()
+	if cfg.ServerName == "" {
+		if host, _, err := net.SplitHostPort(c.addr); err == nil {
+			cfg.ServerName = host
+		}
+	}
+	conn := tls.Client(raw, cfg)
+	if err := conn.HandshakeContext(ctx); err != nil {
+		raw.Close()
+		return nil, err
+	}
+	return conn, nil
 }
 
 // bufferedConn preserves bytes the bufio.Reader consumed past the 101

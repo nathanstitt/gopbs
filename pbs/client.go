@@ -81,6 +81,7 @@ func NewClient(cfg Config) (*Client, error) {
 		restHTTP: &http.Client{
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
+				DialContext:       cfg.Dial,
 				TLSClientConfig:   tlsConf,
 				ForceAttemptHTTP2: false,
 			},
