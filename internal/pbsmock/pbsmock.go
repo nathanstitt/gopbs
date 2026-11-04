@@ -112,6 +112,10 @@ type Server struct {
 	Token     string // when set, the only accepted "authid:secret" API token
 	Datastore string // when set, the only datastore that exists
 	DropAfter int64  // when > 0, the next backup connection closes after this many bytes
+
+	// AnswerDelay holds every answer this long after its request arrived, as
+	// a datastore on disks that are spinning up does.
+	AnswerDelay time.Duration
 }
 
 // New starts a mock on 127.0.0.1 and stops it in t.Cleanup.
@@ -189,7 +193,9 @@ func (m *Server) handleConn(conn net.Conn) {
 		m.Mu.Lock()
 		reject := m.RejectAuth ||
 			(m.Token != "" && req.Header.Get("Authorization") != "PBSAPIToken="+m.Token)
+		delay := m.AnswerDelay
 		m.Mu.Unlock()
+		time.Sleep(delay)
 		if reject {
 			// Echo the credentials like a careless server, to prove the
 			// client keeps them out of errors.

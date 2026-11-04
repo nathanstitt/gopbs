@@ -86,6 +86,16 @@ type Config struct {
 	// upgrade to.
 	DialSession func(ctx context.Context, ref SnapshotRef) (net.Conn, error)
 
+	// ResponseTimeout bounds every wait for the server's answer: the reply to
+	// a session's protocol upgrade, a REST request, and a session connection
+	// that sends no frame (after two thirds of it without a frame the client
+	// pings, and gives up when the rest passes with no answer). A datastore on
+	// disks that spin down can take most of a minute to answer its first
+	// request after a quiet period; set this above that time. Zero keeps the
+	// defaults: 30 s for the upgrade and a REST request, and 30 s idle plus a
+	// 15 s ping for a session.
+	ResponseTimeout time.Duration
+
 	// Dial, when set, opens every TCP connection the client makes: the REST
 	// API's and each session's, before its TLS handshake and protocol upgrade.
 	// TLS runs on the connection it returns, so the fingerprint pin still
