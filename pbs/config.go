@@ -86,6 +86,13 @@ type Config struct {
 	// upgrade to.
 	DialSession func(ctx context.Context, ref SnapshotRef) (net.Conn, error)
 
+	// Dial, when set, opens every TCP connection the client makes: the REST
+	// API's and each session's, before its TLS handshake and protocol upgrade.
+	// TLS runs on the connection it returns, so the fingerprint pin still
+	// applies. Use it to observe connections (timings, socket statistics) or
+	// to route them. Nil uses a plain net.Dialer.
+	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
+
 	// OnUploadProgress, when set, is called by the upload pipeline as chunks
 	// are committed to an index, in stream order (Stats.Size grows
 	// monotonically per index), and once more with done=true after the index
